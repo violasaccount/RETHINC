@@ -1688,3 +1688,60 @@ for (task in biomarker_tasks) {
 
 cat("\n=======================================================================\n")
 cat("Pipeline Completed\n")
+
+
+################################################################################
+# Perturbation Check
+################################################################################
+
+###Perturbation check for linear degeneration to identify acyclic unidentifiability
+
+
+mad_gap <- function(cubic_coef, noise_sd = 1.0, n = 50000, seed = 1,
+                    num.trees = 500, min.node.size = 5) {
+  set.seed(1)
+  X  <- rnorm(n)
+  NY <- rnorm(n, sd = noise_sd)
+  Y  <- X + cubic_coef * X^3 + NY
+  
+  Xs <- as.numeric(scale(X))
+  Ys <- as.numeric(scale(Y))
+  
+  df <- data.frame(Xs = Xs, Ys = Ys)
+  
+  # forward: predict Y from X, OOB residuals
+  rf_fwd <- ranger(Ys ~ Xs, data = df, num.trees = num.trees,
+                   min.node.size = min.node.size)
+  NN_Y <- Ys - rf_fwd$predictions
+  
+  # reverse: predict X from Y, OOB residuals
+  rf_rev <- ranger(Xs ~ Ys, data = df, num.trees = num.trees,
+                   min.node.size = min.node.size)
+  NN_X <- Xs - rf_rev$predictions
+  
+  mad_NY <- mean(abs(NN_Y))
+  mad_NX <- mean(abs(NN_X))
+  
+  list(gap = mad_NX - mad_NY, mad_NY = mad_NY, mad_NX = mad_NX)
+}
+
+#Boundary identification
+cubics <- c(0.5, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001)
+for (c in cubics) {
+  r <- mad_gap(c, noise_sd = 1.0, n = 50000, seed = 1)
+  status <- if (r$gap > 0) "ok" else "FAIL"
+  cat(sprintf("cubic=%-8.4f  MAD_NY=%.4f  MAD_NX=%.4f  gap=%+.5f  %s\n",
+              c, r$mad_NY, r$mad_NX, r$gap, status))
+}
+
+#Rate estimation
+clean_cubics <- c(0.5, 0.3, 0.2, 0.1, 0.07, 0.05)
+gaps <- sapply(clean_cubics, function(c) {
+  mean(sapply(1:2, function(s) mad_gap(c, noise_sd = 1.0, n = 50000, seed = s)$gap))
+})
+for (i in seq_along(clean_cubics)) {
+  cat(sprintf("cubic=%.3f  gap=%.5f\n", clean_cubics[i], gaps[i]))
+}
+fit <- lm(log(gaps) ~ log(clean_cubics))
+cat(sprintf("\nFitted exponent (slope of log-log fit): %.3f\n", coef(fit)[2]))
+
